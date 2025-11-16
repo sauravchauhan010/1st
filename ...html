@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Sheet Tracker</title>
+    <!-- Tailwind CSS CDN for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <!-- Firebase Realtime Database CDN -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+    <!-- jsPDF and jsPDF AutoTable CDNs for PDF Export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        /* Custom styles for the required look and feel */
+        :root {
+            --bg-light: #f4f6f9;
+            --accent-blue: #007bff;
+            --accent-blue-dark: #0056b3;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-light);
+            min-height: 100vh;
+        }
+
+        .text-blue-accent { color: var(--accent-blue); }
+        .bg-blue-accent { background-color: var(--accent-blue); }
+        .hover\:bg-blue-accent-dark:hover { background-color: var(--accent-blue-dark); }
+        .border-blue-accent { border-color: var(--accent-blue); }
+
+        /* Style for active tab */
+        .tab-active {
+            border-bottom: 3px solid var(--accent-blue);
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        /* Table specific styles */
+        .table-container {
+            max-height: calc(100vh - 200px); /* Adjust based on header/footer height */
+            overflow-y: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.5rem;
+        }
+
+        .sticky-header th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background-color: #f4f6f9;
+            box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Editable Cell Styling */
+        .editable-cell {
+            min-width: 50px;
+            cursor: pointer;
+            padding: 8px 12px;
+        }
+
+        /* Alternate row coloring and hover effect */
+        .data-row:nth-child(even) {
+            background-color: #f9fafb;
+        }
+        .data-row:hover {
+            background-color: #eef2ff; /* Light blue hover */
+        }
+        
+        /* Modal Blur Overlay */
+        .modal-overlay {
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body class="flex flex-col">
+
+    <!-- Header & Navigation -->
+    <header class="bg-white shadow-md p-4 sticky top-0 z-20">
+        <div class="container mx-auto flex justify-between items-center flex-wrap">
+            <h1 class="text-2xl font-bold text-gray-800">Multi-Sheet Tracker</h1>
+            
+            <!-- Tabs Navigation -->
+            <nav id="tabs-nav" class="flex space-x-4 border-b border-gray-200 mt-2 md:mt-0">
+                <button data-sheet="api" class="tab-button tab-active p-2 hover:text-blue-accent rounded-t-lg transition duration-150">API Integration</button>
+                <button data-sheet="white" class="tab-button p-2 hover:text-blue-accent rounded-t-lg transition duration-150">White Label</button>
+                <button data-sheet="credit" class="tab-button p-2 hover:text-blue-accent rounded-t-lg transition duration-150">Credit Application</button>
+                <button data-sheet="auth" class="tab-button p-2 hover:text-blue-accent rounded-t-lg transition duration-150">Authorization</button>
+            </nav>
+
+            <!-- Profile/Actions Dropdown -->
+            <div class="relative mt-2 md:mt-0">
+                <button id="profile-btn" class="bg-blue-accent text-white px-4 py-2 rounded-full shadow-md hover:bg-blue-accent-dark transition duration-150">
+                    <i class="fas fa-ellipsis-v"></i>
+                </button>
+                <div id="profile-dropdown" class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl z-30 hidden">
+                    <button class="w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-t-lg" onclick="app.exportPDF()"><i class="fas fa-file-pdf mr-2"></i> Create PDF</button>
+                    <button class="w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100" onclick="app.exportJSON()"><i class="fas fa-file-download mr-2"></i> Download JSON</button>
+                    <button class="w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100" onclick="document.getElementById('json-upload-input').click()"><i class="fas fa-file-upload mr-2"></i> Upload JSON</button>
+                </div>
+            </div>
+            <input type="file" id="json-upload-input" accept=".json" class="hidden" onchange="app.importJSON(event)">
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto p-4 flex-grow">
+        <!-- Controls: Search & Date Filter -->
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+            <input type="text" id="search-input" placeholder="Search by AGT Code or Company Name..." class="flex-grow max-w-lg p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-accent focus:border-blue-accent transition duration-150">
+            
+            <!-- Date Filter (Authorization Tab Only) -->
+            <div id="date-filter-container" class="hidden flex items-center space-x-2">
+                <label class="text-gray-600">Filter Date From:</label>
+                <input type="date" id="start-date-filter" class="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-accent focus:border-blue-accent">
+                <label class="text-gray-600">To:</label>
+                <input type="date" id="end-date-filter" class="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-accent focus:border-blue-accent">
+            </div>
+
+            <button id="add-row-btn" class="bg-green-500 text-white px-4 py-2 rounded-lg shadow-md hover:bg-green-600 transition duration-150 flex items-center">
+                <i class="fas fa-plus mr-2"></i> Add Row
+            </button>
+        </div>
+
+        <!-- Table View -->
+        <div class="table-container shadow-lg">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead id="table-head" class="sticky-header">
+                    <!-- Table headers will be injected here -->
+                </thead>
+                <tbody id="table-body" class="bg-white divide-y divide-gray-200">
+                    <!-- Table rows will be injected here -->
+                    <tr id="loading-row" class="text-center"><td colspan="20" class="p-4 text-gray-500">Loading data from Firebase...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- No Data Message -->
+        <div id="no-data-message" class="hidden text-center mt-8 p-6 bg-white rounded-lg shadow-md">
+            <p class="text-xl text-gray-500"><i class="fas fa-folder-open mr-2"></i> No data found for the current sheet. Click "Add Row" to start!</p>
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="p-4 bg-white text-center text-sm text-gray-500 border-t mt-4">
+        Developed by SAURAV CHAUHAN
+    </footer>
+
+    <!-- Modals (Hidden by Default) -->
+
+    <!-- Remarks Modal -->
+    <div id="remarks-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 modal-overlay hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 transform transition-all">
+            <h2 class="text-2xl font-semibold mb-4 text-blue-accent">Edit Remarks</h2>
+            <p class="text-sm text-gray-500 mb-3">Each line you enter will be automatically prefixed with "- ". (Auto-resize enabled)</p>
+            <textarea id="remarks-textarea" class="w-full p-3 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-accent focus:border-blue-accent h-32" oninput="app.autoResizeTextarea(this);"></textarea>
+            <div class="mt-4 flex justify-end space-x-3">
+                <button onclick="app.closeModal('remarks-modal')" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition duration-150">Cancel</button>
+                <button onclick="app.updateRemarks()" class="px-4 py-2 bg-blue-accent text-white rounded-lg hover:bg-blue-accent-dark transition duration-150">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirmation-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 modal-overlay hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 transform transition-all">
+            <h2 class="text-xl font-semibold mb-3 text-red-600">Confirm Deletion</h2>
+            <p id="confirmation-text" class="text-gray-700 mb-6">Are you sure you want to delete this row? This action cannot be undone.</p>
+            <div class="flex justify-end space-x-3">
+                <button id="cancel-confirm-btn" onclick="app.closeModal('confirmation-modal')" class="px-4 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition duration-150">Cancel</button>
+                <button id="confirm-delete-btn" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition duration-150">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Box (Instead of alert()) -->
+    <div id="message-box" class="fixed top-4 right-4 bg-green-500 text-white p-4 rounded-lg shadow-xl hidden z-[100] transition-opacity duration-300">
+        <span id="message-text"></span>
+    </div>
+
+    <!-- Main JavaScript Logic -->
+    <script>
+        // --- Configuration & Initialization ---
+
+        // Function to sanitize the App ID for use as a Firebase path node name
+        const sanitizeFirebasePath = (path) => {
+            // Firebase Realtime Database paths cannot contain '.', '#', '$', '[', or ']'
+            return path.replace(/[.#$\[\]]/g, '_');
+        };
+
+        // Get the global Firebase variables provided by the environment
+        const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const appId = sanitizeFirebasePath(rawAppId); // Sanitize the path
+        // --- Firebase Configuration ---
+const firebaseConfig = {
+  apiKey: "AIzaSyBth_1AilBLr-x4LiHvlGvWpbk4G4XDfPk",
+  authDomain: "dara-d54e7.firebaseapp.com",
+  databaseURL: "https://dara-d54e7-default-rtdb.firebaseio.com",
+  projectId: "dara-d54e7",
+  storageBucket: "dara-d54e7.firebasestorage.app",
+  messagingSenderId: "457852810868",
+  appId: "1:457852810868:web:31ef63e0391a565cc28321",
+  measurementId: "G-WHTLGEGM5L"
+};
+
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+        const apiKey = ""; // API Key for LLM (not used here, but kept as per instruction)
+
+        // Define the structure for all sheets
+        const SHEET_CONFIG = {
+            'api': {
+                node: 'tracker/api',
+                name: 'API Integration',
+                columns: [
+                    { key: 'agtCode', label: 'AGT Code', type: 'text' },
+                    { key: 'companyName', label: 'Company Name', type: 'text' },
+                    { key: 'infoSent', label: 'Info Sent', type: 'checkbox' },
+                    { key: 'infoReceived', label: 'Info Received', type: 'checkbox' },
+                    { key: 'trade', label: 'Trade', type: 'checkbox' },
+                    { key: 'vat', label: 'VAT', type: 'checkbox' },
+                    { key: 'service', label: 'Service', type: 'checkbox' },
+                    { key: 'xml', label: 'XML', type: 'checkbox' },
+                    { key: 'nda', label: 'NDA', type: 'checkbox' },
+                    { key: 'docsSent', label: 'Docs Sent', type: 'checkbox' },
+                    { key: 'receivedDocs', label: 'Received Docs', type: 'checkbox' },
+                    { key: 'invoice', label: 'Invoice', type: 'checkbox' },
+                    { key: 'billNumber', label: 'Bill Number', type: 'text' },
+                    { key: 'teamsGroup', label: 'Teams Group', type: 'text' },
+                    { key: 'sentToSowmya', label: 'Sent to Sowmya', type: 'checkbox' },
+                    { key: 'testingStarted', label: 'Testing Started', type: 'checkbox' },
+                    { key: 'liveToken', label: 'Live Token', type: 'checkbox' },
+                    { key: 'remarks', label: 'Remarks', type: 'remarks' }
+                ],
+            },
+            'white': {
+                node: 'tracker/white',
+                name: 'White Label',
+                columns: [
+                    { key: 'agtCode', label: 'AGT Code', type: 'text' },
+                    { key: 'companyName', label: 'Company Name', type: 'text' },
+                    { key: 'infoSent', label: 'Info Sent', type: 'checkbox' },
+                    { key: 'infoReceived', label: 'Info Received', type: 'checkbox' },
+                    { key: 'trade', label: 'Trade', type: 'checkbox' },
+                    { key: 'vat', label: 'VAT', type: 'checkbox' },
+                    { key: 'service', label: 'Service', type: 'checkbox' },
+                    { key: 'agreement', label: 'Agreement', type: 'checkbox' }, // XML replaced with Agreement
+                    { key: 'nda', label: 'NDA', type: 'checkbox' },
+                    { key: 'docsSent', label: 'Docs Sent', type: 'checkbox' },
+                    { key: 'receivedDocs', label: 'Received Docs', type: 'checkbox' },
+                    { key: 'invoice', label: 'Invoice', type: 'checkbox' },
+                    { key: 'billNumber', label: 'Bill Number', type: 'text' },
+                    { key: 'teamsGroup', label: 'Teams Group', type: 'text' },
+                    { key: 'sentToSowmya', label: 'Sent to Sowmya', type: 'checkbox' },
+                    { key: 'testingStarted', label: 'Testing Started', type: 'checkbox' },
+                    { key: 'liveToken', label: 'Live Token', type: 'checkbox' },
+                    { key: 'remarks', label: 'Remarks', type: 'remarks' }
+                ],
+            },
+            'credit': {
+                node: 'tracker/credit',
+                name: 'Credit Application',
+                columns: [
+                    { key: 'agtCode', label: 'AGT Code', type: 'text' },
+                    { key: 'companyName', label: 'Company Name', type: 'text' },
+                    { key: 'infoSent', label: 'Info Sent', type: 'checkbox' },
+                    { key: 'infoReceived', label: 'Info Received', type: 'checkbox' },
+                    { key: 'trade', label: 'Trade', type: 'checkbox' },
+                    { key: 'vat', label: 'VAT', type: 'checkbox' },
+                    { key: 'service', label: 'Service', type: 'checkbox' },
+                    { key: 'credit', label: 'Credit', type: 'checkbox' },
+                    { key: 'docsSent', label: 'Docs Sent', type: 'checkbox' },
+                    { key: 'receivedDocs', label: 'Received Docs', type: 'checkbox' },
+                    { key: 'status', label: 'Status', type: 'select', options: ['Pending', 'Approved', 'Rejected'] },
+                    { key: 'amountMode', label: 'Amount Mode', type: 'select', options: ['Online', 'Offline', 'Both'] },
+                    { key: 'onlineAmount', label: 'Online Amt.', type: 'number', dynamic: true, showIf: (mode) => mode === 'Online' || mode === 'Both' },
+                    { key: 'offlineAmount', label: 'Offline Amt.', type: 'number', dynamic: true, showIf: (mode) => mode === 'Offline' || mode === 'Both' },
+                    { key: 'remarks', label: 'Remarks', type: 'remarks' }
+                ],
+            },
+            'auth': {
+                node: 'tracker/auth',
+                name: 'Authorization',
+                columns: [
+                    { key: 'agtCode', label: 'AGT Code', type: 'text' },
+                    { key: 'companyName', label: 'Company Name', type: 'text' },
+                    { key: 'salesPerson', label: 'Sales Person', type: 'text' },
+                    { key: 'remarks', label: 'Remarks', type: 'remarks' },
+                    { key: 'date', label: 'Date', type: 'date' },
+                ],
+            },
+        };
+
+        // Default empty row data for new entries
+        const DEFAULT_ROW = {
+            'text': '', 'checkbox': false, 'number': 0, 'remarks': '',
+            'status': 'Pending', 'amountMode': 'Online', 'date': new Date().toISOString().split('T')[0]
+        };
+
+        class TrackerApp {
+            constructor() {
+                this.db = null;
+                this.data = {}; // Store all data: { sheetName: { rowId: rowData } }
+                this.activeSheet = 'api';
+                this.filteredData = {};
+                this.remarkUpdateRef = null; // To hold Firebase ref for remarks update
+
+                this.initFirebase();
+                this.setupEventListeners();
+            }
+
+            // --- Firebase Initialization & Listeners ---
+
+            initFirebase() {
+                const loadingRow = document.getElementById('loading-row');
+                
+                if (!firebaseConfig) {
+                    this.showMessage('Firebase configuration missing. Data will not be saved.', 'bg-red-500');
+                    if (loadingRow) loadingRow.querySelector('td').textContent = 'Error: Firebase config missing.';
+                    return;
+                }
+
+                try {
+                    firebase.initializeApp(firebaseConfig);
+                    this.db = firebase.database();
+                    
+                    // Set up listeners for all sheets
+                    let listenersReadyCount = 0;
+                    const totalSheets = Object.keys(SHEET_CONFIG).length;
+
+                    Object.keys(SHEET_CONFIG).forEach(sheetKey => {
+                        // Use sanitized appId in the path
+                        const path = `artifacts/${appId}/public/data/${SHEET_CONFIG[sheetKey].node}`;
+                        const ref = this.db.ref(path);
+                        
+                        ref.on('value', (snapshot) => {
+                            const rawData = snapshot.val() || {};
+                            // Transform snapshot data to an array of objects with 'id' key
+                            this.data[sheetKey] = Object.entries(rawData).map(([id, row]) => ({ id, ...row }));
+                            
+                            // Re-render only if the current sheet data changed
+                            if (sheetKey === this.activeSheet) {
+                                this.applyFilters();
+                                // Remove loading row after first successful fetch for the active sheet
+                                if (loadingRow) loadingRow.classList.add('hidden');
+                            }
+                            
+                            // Track readiness (not strictly necessary for data, but useful for initial load confirmation)
+                            if (listenersReadyCount < totalSheets) {
+                                listenersReadyCount++;
+                                if (listenersReadyCount === totalSheets) {
+                                    this.showMessage('Firebase connected and initial data loaded.', 'bg-green-500');
+                                }
+                            }
+
+                        }, (error) => {
+                            console.error(`Firebase error on ${sheetKey}:`, error);
+                            this.showMessage(`Error loading data for ${SHEET_CONFIG[sheetKey].name}. Check console.`, 'bg-red-500');
+                            if (loadingRow) loadingRow.classList.add('hidden');
+                        });
+                    });
+                    
+                    // Initial rendering is now triggered by the listener callback, ensuring data is available.
+                    
+                } catch (e) {
+                    console.error("Error initializing Firebase:", e);
+                    this.showMessage('Failed to initialize Firebase.', 'bg-red-500');
+                    if (loadingRow) loadingRow.querySelector('td').textContent = 'Failed to initialize Firebase.';
+                }
+            }
+            
+            // --- UI/Event Setup ---
+
+            setupEventListeners() {
+                document.querySelectorAll('.tab-button').forEach(button => {
+                    button.addEventListener('click', (e) => this.switchTab(e.target.dataset.sheet));
+                });
+
+                document.getElementById('add-row-btn').addEventListener('click', () => this.addRow());
+                document.getElementById('search-input').addEventListener('input', () => this.applyFilters());
+                
+                const startDateFilter = document.getElementById('start-date-filter');
+                const endDateFilter = document.getElementById('end-date-filter');
+                if(startDateFilter) startDateFilter.addEventListener('change', () => this.applyFilters());
+                if(endDateFilter) endDateFilter.addEventListener('change', () => this.applyFilters());
+
+                document.getElementById('profile-btn').addEventListener('click', () => {
+                    document.getElementById('profile-dropdown').classList.toggle('hidden');
+                });
+                
+                // Close dropdown if clicked outside
+                document.addEventListener('click', (e) => {
+                    const profileDropdown = document.getElementById('profile-dropdown');
+                    const profileBtn = document.getElementById('profile-btn');
+                    if (profileDropdown && profileBtn && e.target !== profileBtn && !profileDropdown.contains(e.target)) {
+                        profileDropdown.classList.add('hidden');
+                    }
+                });
+
+                // Initial UI setup (data load happens via Firebase listener)
+                this.switchTab(this.activeSheet);
+            }
+            
+            switchTab(newSheet) {
+                if (this.activeSheet === newSheet) {
+                    // Still apply filters to ensure search/date filters are active if the user changes them
+                    this.applyFilters();
+                    return;
+                }
+                
+                this.activeSheet = newSheet;
+                
+                // Update tab buttons
+                document.querySelectorAll('.tab-button').forEach(btn => {
+                    btn.classList.remove('tab-active');
+                });
+                const activeBtn = document.querySelector(`[data-sheet="${newSheet}"]`);
+                if(activeBtn) activeBtn.classList.add('tab-active');
+                
+                // Show/hide date filter
+                const isAuthTab = newSheet === 'auth';
+                const dateFilterContainer = document.getElementById('date-filter-container');
+                if(dateFilterContainer) dateFilterContainer.classList.toggle('hidden', !isAuthTab);
+
+                // Re-render table with new sheet's data (will be triggered by listener if data exists, otherwise we force it)
+                this.applyFilters(); 
+            }
+
+            // --- Filtering Logic ---
+
+            applyFilters() {
+                const sheetKey = this.activeSheet;
+                // Use a shallow copy of the data, defaulting to an empty array if not yet loaded
+                let currentData = [...(this.data[sheetKey] || [])]; 
+                const searchInput = document.getElementById('search-input');
+                const searchText = searchInput ? searchInput.value.toLowerCase().trim() : '';
+                
+                // 1. Text Search Filter
+                if (searchText) {
+                    currentData = currentData.filter(row => 
+                        (row.agtCode && String(row.agtCode).toLowerCase().includes(searchText)) ||
+                        (row.companyName && String(row.companyName).toLowerCase().includes(searchText))
+                    );
+                }
+
+                // 2. Date Filter (Authorization tab only)
+                if (sheetKey === 'auth') {
+                    const startDateInput = document.getElementById('start-date-filter');
+                    const endDateInput = document.getElementById('end-date-filter');
+                    const startDate = startDateInput ? startDateInput.value : '';
+                    const endDate = endDateInput ? endDateInput.value : '';
+                    
+                    if (startDate || endDate) {
+                        const startTS = startDate ? new Date(startDate).getTime() : 0;
+                        // End date should include the full day, so we add 24 hours to the end date
+                        const endTS = endDate ? new Date(endDate).getTime() + (24 * 60 * 60 * 1000) : Infinity; 
+
+                        currentData = currentData.filter(row => {
+                            if (!row.date) return false;
+                            
+                            const rowDate = new Date(row.date).getTime();
+                            return rowDate >= startTS && rowDate < endTS; // Use < endTS for inclusivity up to the start of the next day
+                        });
+                    }
+                }
+
+                this.filteredData[sheetKey] = currentData;
+                this.renderTable(currentData, sheetKey);
+            }
+
+            // --- Table Rendering ---
+
+            renderTable(rows, sheetKey) {
+                const config = SHEET_CONFIG[sheetKey];
+                const tHead = document.getElementById('table-head');
+                const tBody = document.getElementById('table-body');
+                const noDataMsg = document.getElementById('no-data-message');
+                
+                // Defensive checks for rendering elements
+                if (!tHead || !tBody || !noDataMsg) {
+                    console.error("Table elements (thead, tbody, or no-data-message) not found in the DOM.");
+                    return;
+                }
+
+                tHead.innerHTML = '';
+                tBody.innerHTML = '';
+                
+                // Show/hide no data message
+                if (rows.length === 0) {
+                    tBody.classList.add('hidden');
+                    noDataMsg.classList.remove('hidden');
+                    // We render headers even if no data, so the table structure is visible
+                    this.renderHeaders(tHead, config.columns); 
+                    return;
+                }
+                tBody.classList.remove('hidden');
+                noDataMsg.classList.add('hidden');
+
+                this.renderHeaders(tHead, config.columns);
+
+                // Render body rows
+                rows.forEach((row, index) => {
+                    const tr = document.createElement('tr');
+                    tr.classList.add('data-row', 'transition-colors', 'duration-150');
+                    
+                    // 1. # (Index Column)
+                    const indexTd = document.createElement('td');
+                    indexTd.className = 'px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-medium';
+                    indexTd.textContent = index + 1;
+                    tr.appendChild(indexTd);
+
+                    // 2. Data Columns
+                    const dynamicMode = row.amountMode; // Only relevant for Credit tab
+                    config.columns.forEach(col => {
+                        // Dynamic Field Visibility Logic (Credit Tab)
+                        if (col.dynamic && !col.showIf(dynamicMode)) return;
+
+                        const td = document.createElement('td');
+                        td.className = 'px-4 py-3 whitespace-nowrap text-sm text-gray-800 border-l border-gray-100';
+                        
+                        // Handle different column types
+                        switch (col.type) {
+                            case 'text':
+                            case 'number':
+                            case 'date':
+                                td.classList.add('editable-cell');
+                                td.setAttribute('contenteditable', 'true');
+                                td.dataset.key = col.key;
+                                td.dataset.id = row.id;
+                                td.textContent = row[col.key] || DEFAULT_ROW[col.type];
+                                td.onblur = (e) => this.handleEdit(e.target, row.id, col.key, col.type);
+                                tr.appendChild(td);
+                                break;
+                            case 'checkbox':
+                                const checkboxContainer = document.createElement('div');
+                                checkboxContainer.className = 'flex items-center justify-center h-full';
+                                const checkbox = document.createElement('input');
+                                checkbox.type = 'checkbox';
+                                checkbox.checked = !!row[col.key];
+                                checkbox.dataset.key = col.key;
+                                checkbox.dataset.id = row.id;
+                                checkbox.className = 'h-4 w-4 text-blue-accent border-gray-300 rounded focus:ring-blue-accent';
+                                checkbox.onchange = (e) => this.handleCheckbox(e.target, row.id, col.key);
+                                checkboxContainer.appendChild(checkbox);
+                                td.appendChild(checkboxContainer);
+                                tr.appendChild(td);
+                                break;
+                            case 'select':
+                                const select = document.createElement('select');
+                                select.dataset.key = col.key;
+                                select.dataset.id = row.id;
+                                select.className = 'p-1 border border-gray-300 rounded focus:ring-blue-accent focus:border-blue-accent bg-white text-sm';
+                                col.options.forEach(optionText => {
+                                    const option = document.createElement('option');
+                                    option.value = optionText;
+                                    option.textContent = optionText;
+                                    select.appendChild(option);
+                                });
+                                select.value = row[col.key] || col.options[0];
+                                select.onchange = (e) => this.handleSelect(e.target, row.id, col.key);
+                                td.appendChild(select);
+                                tr.appendChild(td);
+                                break;
+                            case 'remarks':
+                                const remarksBtn = document.createElement('button');
+                                remarksBtn.className = 'px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-xs hover:bg-blue-100 hover:text-blue-accent transition duration-150';
+                                remarksBtn.innerHTML = '<i class="fas fa-edit"></i> Edit';
+                                remarksBtn.onclick = () => this.openRemarksModal(row.id, row.remarks);
+                                td.appendChild(remarksBtn);
+                                tr.appendChild(td);
+                                break;
+                        }
+                    });
+
+                    // 3. Actions Column
+                    const actionTd = document.createElement('td');
+                    actionTd.className = 'px-4 py-3 whitespace-nowrap text-sm font-medium border-l border-gray-100';
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'text-red-600 hover:text-red-900 transition duration-150';
+                    deleteBtn.innerHTML = '<i class="fas fa-trash"></i> Delete';
+                    deleteBtn.onclick = () => this.openConfirmationModal(row.id);
+                    actionTd.appendChild(deleteBtn);
+                    tr.appendChild(actionTd);
+
+                    tBody.appendChild(tr);
+                });
+            }
+
+            renderHeaders(tHead, columns) {
+                const tr = document.createElement('tr');
+                tr.className = 'bg-gray-100';
+
+                // # Header
+                const indexTh = document.createElement('th');
+                indexTh.className = 'px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider rounded-tl-lg';
+                indexTh.textContent = '#';
+                tr.appendChild(indexTh);
+
+                // Determine dynamic mode for header rendering (Credit tab specific)
+                const isCreditTab = this.activeSheet === 'credit';
+                // Find the amountMode from the first row of current data, or default
+                const dynamicMode = isCreditTab ? (this.filteredData[this.activeSheet]?.[0]?.amountMode || 'Online') : null;
+                
+                // Data Headers
+                columns.forEach(col => {
+                    // Check dynamic column visibility based on the first row's mode
+                    if (col.dynamic && isCreditTab && !col.showIf(dynamicMode)) return;
+
+                    const th = document.createElement('th');
+                    th.className = 'px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-l border-gray-200';
+                    th.textContent = col.label;
+                    tr.appendChild(th);
+                });
+
+                // Actions Header
+                const actionTh = document.createElement('th');
+                actionTh.className = 'px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider rounded-tr-lg border-l border-gray-200';
+                actionTh.textContent = 'Actions';
+                tr.appendChild(actionTh);
+
+                tHead.appendChild(tr);
+            }
+
+            // --- CRUD Operations ---
+
+            getRef(id = null) {
+                // Path uses sanitized appId
+                const path = `artifacts/${appId}/public/data/${SHEET_CONFIG[this.activeSheet].node}`;
+                return this.db.ref(id ? `${path}/${id}` : path);
+            }
+            
+            // C - Create (Add Row)
+            addRow() {
+                if (!this.db) {
+                    this.showMessage('Firebase is not initialized. Cannot add row.', 'bg-red-500');
+                    return;
+                }
+                const config = SHEET_CONFIG[this.activeSheet];
+                const newRow = {};
+                
+                config.columns.forEach(col => {
+                    newRow[col.key] = DEFAULT_ROW[col.type] !== undefined ? DEFAULT_ROW[col.type] : DEFAULT_ROW[col.key];
+                });
+                
+                this.getRef().push(newRow)
+                    .then(() => this.showMessage('New row added successfully.', 'bg-green-500'))
+                    .catch(error => {
+                        console.error("Error adding row:", error);
+                        this.showMessage('Failed to add row.', 'bg-red-500');
+                    });
+            }
+
+            // U - Update (Cell Edit)
+            handleEdit(element, id, key, type) {
+                let value = element.textContent.trim();
+                
+                // Type casting/sanitation
+                if (type === 'number') {
+                    value = parseFloat(value);
+                    if (isNaN(value)) {
+                        this.showMessage(`Invalid number for ${key}. Reverting.`, 'bg-yellow-500');
+                        // Find the original value to revert the display
+                        const originalRow = this.data[this.activeSheet].find(r => r.id === id);
+                        element.textContent = originalRow ? (originalRow[key] || 0) : 0;
+                        return;
+                    }
+                } else if (type === 'date') {
+                    // Simple validation for YYYY-MM-DD
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                        value = new Date().toISOString().split('T')[0]; // Reset to current date on invalid format
+                        element.textContent = value;
+                        this.showMessage('Invalid date format. Using YYYY-MM-DD.', 'bg-yellow-500');
+                    }
+                }
+
+                this.getRef(id).update({ [key]: value })
+                    .then(() => this.showMessage('Update saved.', 'bg-green-500'))
+                    .catch(error => {
+                        console.error("Error updating cell:", error);
+                        this.showMessage('Failed to save update.', 'bg-red-500');
+                    });
+            }
+            
+            // U - Update (Checkbox)
+            handleCheckbox(element, id, key) {
+                this.getRef(id).update({ [key]: element.checked })
+                    .then(() => this.showMessage('Checkbox state saved.', 'bg-green-500'))
+                    .catch(error => {
+                        console.error("Error updating checkbox:", error);
+                        this.showMessage('Failed to save checkbox state.', 'bg-red-500');
+                    });
+            }
+
+            // U - Update (Select)
+            handleSelect(element, id, key) {
+                const updateObject = { [key]: element.value };
+                
+                // Special logic for Credit Application's dynamic fields
+                if (this.activeSheet === 'credit' && key === 'amountMode') {
+                    // No need to force re-render, the Firebase listener will trigger applyFilters() 
+                    // after the update and the UI will refresh automatically.
+                }
+                
+                this.getRef(id).update(updateObject)
+                    .then(() => this.showMessage('Selection saved.', 'bg-green-500'))
+                    .catch(error => {
+                        console.error("Error updating select:", error);
+                        this.showMessage('Failed to save selection.', 'bg-red-500');
+                    });
+            }
+
+            // D - Delete (Row)
+            openConfirmationModal(id) {
+                const modal = document.getElementById('confirmation-modal');
+                const confirmBtn = document.getElementById('confirm-delete-btn');
+                
+                if (!modal || !confirmBtn) return;
+                
+                confirmBtn.onclick = () => {
+                    this.deleteRow(id);
+                    this.closeModal('confirmation-modal');
+                };
+                modal.classList.remove('hidden');
+            }
+
+            deleteRow(id) {
+                this.getRef(id).remove()
+                    .then(() => this.showMessage('Row deleted permanently.', 'bg-green-500'))
+                    .catch(error => {
+                        console.error("Error deleting row:", error);
+                        this.showMessage('Failed to delete row.', 'bg-red-500');
+                    });
+            }
+
+            // --- Remarks Modal Logic ---
+
+            openRemarksModal(id, currentRemarks) {
+                const modal = document.getElementById('remarks-modal');
+                const textarea = document.getElementById('remarks-textarea');
+
+                if (!modal || !textarea) return;
+                
+                // Format remarks for display (remove prefix for editing)
+                let cleanedRemarks = (currentRemarks || '').replace(/^- /gm, '');
+                textarea.value = cleanedRemarks;
+                this.autoResizeTextarea(textarea); // Auto-resize on open
+                
+                this.remarkUpdateRef = this.getRef(id).child('remarks');
+                modal.classList.remove('hidden');
+            }
+
+            updateRemarks() {
+                const textarea = document.getElementById('remarks-textarea');
+                if (!textarea) return;
+                
+                let rawText = textarea.value.trim();
+                
+                // Auto-prefix each non-empty line with "- "
+                const lines = rawText.split('\n');
+                const prefixedText = lines.map(line => line.trim()).filter(line => line.length > 0).map(line => `- ${line}`).join('\n');
+                
+                if (this.remarkUpdateRef) {
+                    this.remarkUpdateRef.set(prefixedText)
+                        .then(() => {
+                            this.showMessage('Remarks saved and formatted.', 'bg-green-500');
+                            this.closeModal('remarks-modal');
+                        })
+                        .catch(error => {
+                            console.error("Error updating remarks:", error);
+                            this.showMessage('Failed to save remarks.', 'bg-red-500');
+                        });
+                }
+            }
+
+            autoResizeTextarea(element) {
+                // Resize based on content
+                element.style.height = 'auto';
+                // Add a few pixels for padding and better scroll experience
+                element.style.height = (element.scrollHeight + 5) + 'px'; 
+            }
+            
+            // --- Modal Helpers ---
+
+            closeModal(id) {
+                const modal = document.getElementById(id);
+                if (modal) {
+                    modal.classList.add('hidden');
+                }
+            }
+            
+            showMessage(text, colorClass) {
+                const msgBox = document.getElementById('message-box');
+                const msgText = document.getElementById('message-text');
+
+                if (!msgBox || !msgText) return;
+
+                // Reset classes
+                msgBox.className = 'fixed top-4 right-4 p-4 rounded-lg shadow-xl hidden z-[100] transition-opacity duration-300';
+                
+                msgBox.classList.add(colorClass);
+                msgText.textContent = text;
+                msgBox.classList.remove('hidden');
+                msgBox.style.opacity = '1';
+
+                setTimeout(() => {
+                    msgBox.style.opacity = '0';
+                    setTimeout(() => msgBox.classList.add('hidden'), 300);
+                }, 3000);
+            }
+
+            // --- Export/Import Logic ---
+
+            // Export to PDF
+            exportPDF() {
+                if (!window.jspdf || !window.jspdf.jsPDF) {
+                    this.showMessage('jsPDF library not fully loaded.', 'bg-red-500');
+                    return;
+                }
+                
+                const doc = new window.jspdf.jsPDF();
+                const sheetKey = this.activeSheet;
+                const config = SHEET_CONFIG[sheetKey];
+                const currentData = this.filteredData[sheetKey];
+
+                if (!currentData || currentData.length === 0) {
+                    this.showMessage('No data to export.', 'bg-yellow-500');
+                    return;
+                }
+                
+                const head = [];
+                const body = [];
+                
+                // Create Headers
+                const dynamicMode = currentData[0]?.amountMode; // Use optional chaining for safety
+                let headerLabels = ['#'];
+                config.columns.forEach(col => {
+                    if (!col.dynamic || (dynamicMode && col.showIf(dynamicMode))) {
+                        headerLabels.push(col.label);
+                    }
+                });
+                headerLabels.push('ID (Firebase)');
+                head.push(headerLabels);
+                
+                // Create Body Data
+                currentData.forEach((row, index) => {
+                    const rowData = [index + 1];
+                    config.columns.forEach(col => {
+                        if (!col.dynamic || (row.amountMode && col.showIf(row.amountMode))) {
+                            let value = row[col.key];
+                            if (col.type === 'checkbox') {
+                                value = value ? '✔' : '✘';
+                            } else if (value === null || value === undefined) {
+                                value = '';
+                            }
+                            rowData.push(String(value));
+                        }
+                    });
+                    rowData.push(row.id);
+                    body.push(rowData);
+                });
+                
+                // Generate PDF
+                doc.autoTable({
+                    head: head,
+                    body: body,
+                    startY: 20,
+                    theme: 'grid',
+                    headStyles: { fillColor: '#007bff' },
+                    didDrawPage: function (data) {
+                        doc.text(config.name, 14, 15);
+                    }
+                });
+                
+                doc.save(`${config.name}_Tracker_Export.pdf`);
+                this.showMessage('Data exported to PDF.', 'bg-green-500');
+            }
+
+            // Export to JSON
+            exportJSON() {
+                const sheetKey = this.activeSheet;
+                const config = SHEET_CONFIG[sheetKey];
+                const dataToExport = this.filteredData[sheetKey].reduce((acc, row) => {
+                    const { id, ...rest } = row;
+                    acc[id] = rest;
+                    return acc;
+                }, {});
+
+                const jsonString = JSON.stringify(dataToExport, null, 2);
+                const blob = new Blob([jsonString], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${config.name}_Tracker_Export.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                this.showMessage('Data exported to JSON.', 'bg-green-500');
+            }
+
+            // Import from JSON
+            importJSON(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const newNodes = JSON.parse(e.target.result);
+                        
+                        // Check if the file contains an object of objects (Firebase structure)
+                        if (typeof newNodes !== 'object' || newNodes === null) {
+                            throw new Error("Invalid JSON structure. Must be an object of key-value pairs.");
+                        }
+                        
+                        // Overwrite the current Firebase node
+                        this.getRef().set(newNodes)
+                            .then(() => this.showMessage(`Data for ${SHEET_CONFIG[this.activeSheet].name} uploaded successfully!`, 'bg-green-500'))
+                            .catch(error => {
+                                console.error("Firebase SET error:", error);
+                                this.showMessage('Firebase upload failed. Check JSON content.', 'bg-red-500');
+                            });
+                        
+                    } catch (error) {
+                        console.error("JSON processing error:", error);
+                        this.showMessage(`Error: ${error.message || 'Invalid JSON file format.'}`, 'bg-red-500');
+                    }
+                };
+                reader.readAsText(file);
+                
+                // Clear the input to allow re-uploading the same file
+                event.target.value = ''; 
+            }
+        }
+
+        // Initialize the application once the DOM is ready
+        window.onload = () => {
+            window.app = new TrackerApp();
+        };
+
+    </script>
+</body>
+</html>
